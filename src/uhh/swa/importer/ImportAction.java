@@ -1,21 +1,19 @@
 package uhh.swa.importer;
 
-import java.io.File;
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Queue;
-import java.util.Set;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.stream.Collectors;
+import com.eteks.sweethome3d.model.Home;
+import com.eteks.sweethome3d.model.UserPreferences;
+import com.eteks.sweethome3d.plugin.PluginAction;
+import com.eteks.sweethome3d.viewcontroller.*;
+import it.svario.xpathapi.jaxp.XPathAPI;
+import org.apache.commons.io.FileUtils;
+import org.javatuples.Pair;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.Node;
+import org.xml.sax.SAXException;
 
-import javax.swing.JFileChooser;
-import javax.swing.JOptionPane;
+import javax.swing.*;
+import javax.swing.undo.UndoableEditSupport;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
@@ -25,37 +23,48 @@ import javax.xml.transform.TransformerFactory;
 import javax.xml.transform.dom.DOMSource;
 import javax.xml.transform.stream.StreamResult;
 import javax.xml.xpath.XPathException;
+import java.io.File;
+import java.io.IOException;
+import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.*;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.stream.Collectors;
 
-import org.apache.commons.io.FileUtils;
-import org.javatuples.Pair;
-import org.w3c.dom.Document;
-import org.w3c.dom.Element;
-import org.w3c.dom.Node;
-import org.xml.sax.SAXException;
-
-import com.eteks.sweethome3d.plugin.PluginAction;
-
-import it.svario.xpathapi.jaxp.XPathAPI;
-
+@SuppressWarnings("SpellCheckingInspection")
 public class ImportAction extends PluginAction {
 
+    private ImportPlugin plugin;
     private Transformer transformer;
 
-    public ImportAction() {
+    public ImportAction(ImportPlugin importPlugin) {
         putPropertyValue(Property.MENU, "Project");
         putPropertyValue(Property.NAME, "Import Projects");
         setEnabled(true);
+        plugin = importPlugin;
     }
 
     private void showError(String message) {
         JOptionPane.showMessageDialog(null, message, "Error", JOptionPane.ERROR_MESSAGE);
     }
 
+    private Object getPrivateField(Class<?> clazz, String fieldName, Object instance) {
+        try {
+            Field field = clazz.getDeclaredField(fieldName);
+            field.setAccessible(true);
+            return field.get(instance);
+        } catch (IllegalAccessException | NoSuchFieldException e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+
     @Override
     public void execute() {
         ImportFilter filter = new ImportFilter();
         JFileChooser chooser = new JFileChooser();
-        //noinspection SpellCheckingInspection
         chooser.setFileFilter(filter);
         int option = chooser.showOpenDialog(null);
         if (option == JFileChooser.APPROVE_OPTION) {
@@ -69,8 +78,27 @@ public class ImportAction extends PluginAction {
                 if (!dir.isDirectory())
                     dir = null;
                 List<File> files = splitFile(file, dir);
-//                files.forEach(f -> importFile(f));
+                files.forEach(this::importFile);
             }
+        }
+    }
+
+    private void importFile(File f) {
+        FurnitureController furnitureController = plugin.getHomeController().getFurnitureController();
+        try {
+            Home home = (Home) getPrivateField(FurnitureController.class, "home", furnitureController);
+            UserPreferences preferences = (UserPreferences) getPrivateField(FurnitureController.class, "preferences", furnitureController);
+            ViewFactory viewFactory = (ViewFactory) getPrivateField(FurnitureController.class, "viewFactory", furnitureController);
+            ContentManager contentManager = (ContentManager) getPrivateField(FurnitureController.class, "contentManager", furnitureController);
+            UndoableEditSupport undoSupport = (UndoableEditSupport) getPrivateField(FurnitureController.class, "undoSupport", furnitureController);
+            ImportedFurnitureWizardController importedFurnitureWizardController = new ImportedFurnitureWizardController(home, f.getAbsolutePath(), preferences, furnitureController, viewFactory, contentManager, undoSupport);
+            importedFurnitureWizardController.goToNextStep();
+
+            View furnitureView = (View) FurnitureController.class.getMethod("getView").invoke(furnitureController);
+            importedFurnitureWizardController.displayView(furnitureView);
+
+        } catch (IllegalAccessException | NoSuchMethodException | InvocationTargetException e) {
+            e.printStackTrace();
         }
     }
 
@@ -88,7 +116,7 @@ public class ImportAction extends PluginAction {
         } catch (IOException e) {
             return splitException("Unable to create temporary directory.", e);
         }
-        if (directory!=null) {
+        if (directory != null) {
             try {
                 FileUtils.copyDirectoryToDirectory(directory, temp.toFile());
             } catch (IOException e) {
@@ -105,7 +133,6 @@ public class ImportAction extends PluginAction {
         Document source;
         try {
             source = builder.parse(file);
-
             List<Document> documents;
             if (XPathAPI.selectSingleNode(source, "//node[@name='SketchUp']") != null)
                 documents = sketchUpImport(builder, source);
@@ -139,15 +166,15 @@ public class ImportAction extends PluginAction {
         sceneID = sceneID.substring(1, sceneID.length());
 
         List<String> floatingSceneNodes = XPathAPI.selectListOfNodes(source, "/COLLADA/library_visual_scenes/visual_scene/node[@name='SketchUp']/instance_geometry")
-                .parallelStream()
+                .stream()
                 .map(node -> node.getAttributes()
                         .getNamedItem("url")
-                        .getNodeValue())
-                .map(s -> s.substring(1, s.length()))
+                        .getNodeValue()
+                        .substring(1))
                 .collect(Collectors.toList());
 
         List<String> nodes = XPathAPI.selectListOfNodes(source, "/COLLADA/library_nodes/node")
-                .parallelStream()
+                .stream()
                 .map(node -> node.getAttributes()
                         .getNamedItem("id")
                         .getNodeValue())
@@ -155,7 +182,7 @@ public class ImportAction extends PluginAction {
 
         for (String node : nodes) {
             XPathAPI.selectListOfNodes(source, "/COLLADA/library_visual_scenes/visual_scene/node[@name='SketchUp']/node[descendant::instance_node[@url='#" + node + "']]")
-                    .parallelStream()
+                    .stream()
                     .map(n -> n.getAttributes()
                             .getNamedItem("id")
                             .getNodeValue())
@@ -163,11 +190,12 @@ public class ImportAction extends PluginAction {
         }
 
         for (String node : nodes) {
-            XPathAPI.selectListOfNodes(source, "/COLLADA/library_nodes/node[descendant::instance_node[@url='#" + node + "']]")
-                    .parallelStream()
+            XPathAPI.selectListOfNodes(source, "/COLLADA/library_nodes/node[@id='" + node + "']//instance_node[@url]")
+                    .stream()
                     .map(n -> n.getAttributes()
-                            .getNamedItem("id")
-                            .getNodeValue())
+                            .getNamedItem("url")
+                            .getNodeValue()
+                            .substring(1))
                     .distinct()
                     .forEach(s -> relatedNodes.add(new Pair<>(node, s)));
         }
@@ -182,15 +210,17 @@ public class ImportAction extends PluginAction {
             Element library_nodes = temp.createElement("library_nodes");
             for (String nodeID : libraryNodes) {
                 XPathAPI.selectListOfNodes(source, "/COLLADA/library_nodes/node[@id='" + nodeID + "']//instance_geometry")
-                        .parallelStream()
+                        .stream()
                         .map(n -> n.getAttributes()
                                 .getNamedItem("url")
-                                .getNodeValue())
-                        .map(s -> s.substring(1, s.length()))
+                                .getNodeValue()
+                                .substring(1))
                         .forEach(geometryIDs::add);
                 library_nodes.appendChild(temp.importNode(XPathAPI.selectSingleNode(source, "/COLLADA/library_nodes/node[@id='" + nodeID + "']"), true));
             }
             root.appendChild(library_nodes);
+
+            if (geometryIDs.isEmpty()) continue;
 
             Element geometries = temp.createElement("library_geometries");
             for (String geometryID : geometryIDs) {
@@ -198,7 +228,7 @@ public class ImportAction extends PluginAction {
             }
             root.appendChild(geometries);
 
-            List<String> sceneNodes = relatedSceneNodes.parallelStream()
+            List<String> sceneNodes = relatedSceneNodes.stream()
                     .filter(sn -> libraryNodes.contains(sn.getValue0()))
                     .map(Pair::getValue1)
                     .collect(Collectors.toList());
@@ -293,7 +323,6 @@ public class ImportAction extends PluginAction {
     }
 
     private List<Document> freeCADImport(DocumentBuilder builder, Document source) throws XPathException {
-        List<Pair<String, String>> relatedNodes = new ArrayList<>();
         List<Set<String>> consolidatedRelatedNodes = new ArrayList<>();
         List<Document> documents = new ArrayList<>();
 
@@ -301,43 +330,31 @@ public class ImportAction extends PluginAction {
         sceneID = sceneID.substring(1, sceneID.length());
 
         List<String> nodes = XPathAPI.selectListOfNodes(source, "/COLLADA/library_visual_scenes/visual_scene/node")
-                .parallelStream()
+                .stream()
                 .map(node -> node.getAttributes()
                         .getNamedItem("name")
                         .getNodeValue())
                 .collect(Collectors.toList());
 
         for (String node : nodes) {
-            XPathAPI.selectListOfNodes(source, "/COLLADA/library_visual_scenes/visual_scene/node[descendant::instance_node[@url='#" + node + "']]")
-                    .parallelStream()
-                    .map(n -> n.getAttributes()
-                            .getNamedItem("id")
-                            .getNodeValue())
-                    .distinct()
-                    .forEach(s -> relatedNodes.add(new Pair<>(node, s)));
-        }
-
-        consolidateNodes(relatedNodes, consolidatedRelatedNodes, nodes);
-
-        for (Set<String> sceneNodes : consolidatedRelatedNodes) {
             Document temp = builder.newDocument();
             Node root = createSkeleton(source, temp);
 
-            List<String> geometryIDs = new ArrayList<>();
             Element visualScenes = temp.createElement("library_visual_scenes");
             Element visualScene = temp.createElement("visual_scene");
             visualScene.setAttribute("id", sceneID);
-            for (String nodeID : sceneNodes) {
-                String geometry = XPathAPI.selectSingleNode(source, "/COLLADA/library_visual_scenes/visual_scene/node[@id='" + nodeID + "']//instance_geometry")
-                        .getAttributes()
-                        .getNamedItem("url")
-                        .getNodeValue();
-                geometry = geometry.substring(1, geometry.length());
-                geometryIDs.add(geometry);
-                visualScene.appendChild(temp.importNode(XPathAPI.selectSingleNode(source, "/COLLADA/library_visual_scenes/visual_scene/node[@id='" + nodeID + "']"), true));
-            }
+            List<String> geometryIDs = XPathAPI.selectListOfNodes(source, "/COLLADA/library_visual_scenes/visual_scene/node[@id='" + node + "']//instance_geometry")
+                    .stream()
+                    .map(n -> n.getAttributes()
+                            .getNamedItem("url")
+                            .getNodeValue()
+                            .substring(1))
+                    .collect(Collectors.toList());
+            visualScene.appendChild(temp.importNode(XPathAPI.selectSingleNode(source, "/COLLADA/library_visual_scenes/visual_scene/node[@id='" + node + "']"), true));
             visualScenes.appendChild(visualScene);
             root.appendChild(visualScenes);
+
+            if (geometryIDs.isEmpty()) continue;
 
             Element geometries = temp.createElement("library_geometries");
             for (String geometryID : geometryIDs) {

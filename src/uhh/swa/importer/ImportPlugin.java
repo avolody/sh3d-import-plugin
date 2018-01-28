@@ -6,6 +6,6 @@ import com.eteks.sweethome3d.plugin.PluginAction;
 public class ImportPlugin extends Plugin {
     @Override
     public PluginAction[] getActions() {
-        return new PluginAction[]{new ImportAction()};
+        return new PluginAction[]{new ImportAction(this)};
     }
 }
